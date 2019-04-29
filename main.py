@@ -65,18 +65,19 @@ def train(options, model):
             break
         tr_loss, tlm_loss, num_words = 0, 0, 0
         strt = time.time()
-        
         for i_batch, sample_batch in enumerate(tqdm(train_dataloader)):
+            if i_batch == len(train_dataloader)-2:
+                break
             new_tc_ratio = 2100.0/(2100.0 + math.exp(batch_id/2100.0))
             model.dec.set_tc_ratio(new_tc_ratio)
             preds, lmpreds = model(sample_batch)
             maxlen = sample_batch[3]
             utter_batch = sample_batch[0]
             turnsnumbers = sample_batch[2]
-            final_utters = torch.ones(50,maxlen).long()
-            final_preds = torch.ones(50,maxlen,52701)
+            final_utters = torch.ones(options.bt_siz,maxlen).long()
+            final_preds = torch.ones(options.bt_siz,maxlen,52701)
             final_lmpreds = []
-            for i in range(0, options.bt_siz-1):
+            for i in range(0, options.bt_siz):
                 turnsnumber = turnsnumbers[i]
                 final_pred = []
                 final_pred = preds[turnsnumber-2][i]
@@ -114,7 +115,7 @@ def train(options, model):
             loss = loss/target_toks
             
             if options.lm:
-                for i in range(0, options.bt_siz-1):
+                for i in range(0, options.bt_siz):
                     turnsnumber = turnsnumber[i]
                     final_lmpred = lmpreds[turnsnumber-2][i]
                     final_lmpreds.append(final_lmpred)
@@ -132,16 +133,10 @@ def train(options, model):
             
             batch_id += 1
 
-        vl_loss = calc_valid_loss(valid_dataloader, criteria, model)
-        try:
-            print("Training loss {}".format(tr_loss/num_words))
-        except:
-            print("train loss error")
-        try:
-            print("Validation loss {}".format(vl_loss))
-            best_vl_loss = vl_loss
-        except:
-            print("vlloss error")
+        vl_loss = calc_valid_loss(valid_dataloader, criteria, model,options)
+        print("Training loss {}".format(tr_loss/num_words))
+        print("Validation loss {}".format(vl_loss))
+        best_vl_loss = vl_loss
         print("epoch {} took {} mins".format(i+1, (time.time() - strt)/60.0))
         #print("tc ratio", model.dec.get_tc_ratio())
         #if vl_loss < best_vl_loss or options.toy:
@@ -164,13 +159,14 @@ def generate(model, ses_encoding, options):
     
     n_candidates, final_candids = [], []
     candidates = [([1], 0, 0)]
-    gen_len, max_gen_len = 1, 20
+    gen_len, max_gen_len = 1, 50
     
     # we provide the top k options/target defined each time
     while gen_len <= max_gen_len:
         for c in candidates:
             seq, pts_score, pt_score = c[0], c[1], c[2]
             _target = Variable(torch.LongTensor([seq]), volatile=True)
+            #_target = seq
             dec_o, dec_lm = model.dec([ses_encoding, _target, [len(seq)]])
             dec_o = dec_o[:, :, :-1]
 
@@ -236,13 +232,33 @@ def inference_beam(dataloader, model, inv_dict, options):
     load_model_state(model, options.name + "_mdl.pth")
     model.eval()
 
-    test_ppl = calc_valid_loss(dataloader, criteria, model)
+    test_ppl = calc_valid_loss(dataloader, criteria, model,options)
     print("test preplexity is:{}".format(test_ppl))
     
     for i_batch, sample_batch in enumerate(dataloader):
         #u1, u1_lens, u2, u2_lens, u3, u3_lens = sample_batch[0], sample_batch[1], sample_batch[2], sample_batch[3], \
         #                                        sample_batch[4], sample_batch[5]
-            
+        qu_seq = torch.ones(1)
+        session_outputs = []
+        utter_batch = sample_batch[0]
+        maxlen = sample_batch[3]
+        turnsnumbers = sample_batch[2]
+        #final_utters = torch.ones(
+        for i in range(0, len(sample_batch[0]) - 1):
+            utter = sample_batch[0][i]
+            utter_lens = sample_batch[1][i]
+            if use_cuda:
+                utter = utter.cuda()
+            o = model.base_enc((utter,utter_lens))
+            if i!=0:
+                qu_seq = torch.cat((qu_seq,o),1)
+            else:
+                qu_seq = o
+            #turn = np.array(turnsnumber)
+            #turn[turn > i + 1] = i + 1
+            #currently we do not need so many turns
+            session_o = model.ses_enc(qu_seq)
+            session_outputs.append(session_o)            
         #if use_cuda:
         #    u1 = u1.cuda()
         #    u2 = u2.cuda()
@@ -251,13 +267,16 @@ def inference_beam(dataloader, model, inv_dict, options):
         #o1, o2 = model.base_enc((u1, u1_lens)), model.base_enc((u2, u2_lens))
         #qu_seq = torch.cat((o1, o2), 1)
         # if we need to decode the intermediate queries we may need the hidden states
-        final_session_o = model.ses_enc(qu_seq)
-        # forward(self, ses_encoding, x=None, x_lens=None, beam=5 ):
+        #final_session_o = model.ses_enc(qu_seq)
+        #forward(self, ses_encoding, x=None, x_lens=None, beam=5 ):
         for k in range(options.bt_siz):
-            sent = generate(model, final_session_o[k, :, :].unsqueeze(0), options)
+            turnsnumber = turnsnumbers[i]
+            final_utterance = utter_batch[turnsnumber-1][k]
+            final_session_o = session_outputs[turnsnumber-2][k]
+            sent = generate(model, final_session_o.unsqueeze(0), options)
             pt = tensor_to_sent(sent, inv_dict)
             # greedy true for below because only beam generates a tuple of sequence and probability
-            gt = tensor_to_sent(u3[k, :].unsqueeze(0).data.cpu().numpy(), inv_dict, True)
+            gt = tensor_to_sent(final_utterance.unsqueeze(0).data.cpu().numpy(), inv_dict, True)
             fout.write(str(gt[0]) + "    |    " + str(pt[0][0]) + "\n")
             fout.flush()
 
@@ -270,22 +289,23 @@ def inference_beam(dataloader, model, inv_dict, options):
     model.dec.set_teacher_forcing(cur_tc)
     fout.close()
     
-def calc_valid_loss(data_loader, criteria, model):
+def calc_valid_loss(data_loader, criteria, model,options):
     model.eval()
     cur_tc = model.dec.get_teacher_forcing()
     model.dec.set_teacher_forcing(True)
     # we want to find the perplexity or likelihood of the provided sequence
-    
     valid_loss, num_words = 0, 0
     for i_batch, sample_batch in enumerate(tqdm(data_loader)):
+        if i_batch == len(data_loader)-2:
+            break 
         preds, lmpreds = model(sample_batch)
         maxlen = sample_batch[3]
         utter_batch = sample_batch[0]
         turnsnumbers = sample_batch[2]
-        final_utters = torch.ones(50,maxlen).long()
-        final_preds = torch.ones(50,maxlen,52701)
+        final_utters = torch.ones(options.bt_siz,maxlen).long()
+        final_preds = torch.ones(options.bt_siz,maxlen,52701)
         final_lmpreds = []
-        for i in range(0, options.bt_siz-1):
+        for i in range(0, options.bt_siz):
             turnsnumber = turnsnumbers[i]
             final_pred = []
             final_pred = preds[turnsnumber-2][i]
@@ -385,7 +405,7 @@ def uniq_answer(fil):
     
 def main():
     print('torch version {}'.format(torch.__version__))
-    _dict_file = 'douban.dict.pkl'
+    _dict_file = 'sorted_douban.dict.pkl'
     # we use a common dict for all test, train and validation
     
     with open(_dict_file, 'rb') as fp2:
@@ -413,8 +433,8 @@ def main():
     parser.add_argument('-drp', dest='drp', type=float, default=0.3, help='dropout probability used all throughout')
     parser.add_argument('-nl', dest='num_lyr', type=int, default=1, help='number of enc/dec layers(same for both)')
     parser.add_argument('-lr', dest='lr', type=float, default=0.001, help='learning rate for optimizer')
-    parser.add_argument('-bs', dest='bt_siz', type=int, default=16, help='batch size')
-    parser.add_argument('-bms', dest='beam', type=int, default=1, help='beam size for decoding')
+    parser.add_argument('-bs', dest='bt_siz', type=int, default=1, help='batch size')
+    parser.add_argument('-bms', dest='beam', type=int, default=5, help='beam size for decoding')
     parser.add_argument('-vsz', dest='vocab_size', type=int, default=52701, help='size of vocabulary')
     parser.add_argument('-esz', dest='emb_size', type=int, default=300, help='embedding size enc/dec same')
     parser.add_argument('-uthid', dest='ut_hid_size', type=int, default=600, help='encoder utterance hidden state')
@@ -438,7 +458,7 @@ def main():
         
         
         test_dataloader = DataLoader(test_dataset, options.bt_siz, shuffle=True, num_workers=2, collate_fn=custom_collate_fn)
-        # inference_beam(test_dataloader, model, inv_dict, options)
-        uniq_answer(options.name)
+        inference_beam(test_dataloader, model, inv_dict, options)
+        #uniq_answer(options.name)
 
 main()

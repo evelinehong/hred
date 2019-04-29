@@ -46,6 +46,7 @@ class Seq2Seq(nn.Module):
             else:
                 qu_seq = o
             turn = np.array(turnsnumber)
+            #currently we do not need so many turns for input to the decoder
             turn[turn > i + 1] = i + 1
             session_o = self.ses_enc(qu_seq)
             session_outputs.append(session_o)

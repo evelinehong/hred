@@ -150,7 +150,7 @@ def custom_collate_fn(batch):
     #print(u_batch)
     #u_batch = np.array(u_batch)
     #sort4utternumber = np.argsort(turnsnumber*-1)
-    #u_batch = u_batch[sort4utternumber]
+    #u_batch = u_batch[sort4utternumber,:]
     return u_batch, u_lens, turnsnumbers, max_clu
 
 class DialogTurn:
@@ -181,11 +181,11 @@ class DialogTurn:
 class MovieTriples(Dataset):
     def __init__(self, data_type, length=None):
         if data_type == 'train':
-            _file = 'train.dialogues.pkl'
+            _file = 'train_sub.dialogues.pkl'
         elif data_type == 'valid':
-            _file = 'valid.dialogues.pkl'
+            _file = 'valid_sub.dialogues.pkl'
         elif data_type == 'test':
-            _file = 'test.dialogues.pkl'
+            _file = 'test_sub.dialogues.pkl'
         self.utterance_data = []
 
         with open(_file, 'rb') as fp:
