@@ -4,6 +4,7 @@ import time
 import torch.nn.init as init
 import torch.optim as optim
 from torch.utils.data import DataLoader
+import numpy as np
 
 from modules import *
 from util import *
@@ -54,7 +55,7 @@ def train(options, model):
     print("Training set {} Validation set {}".format(len(train_dataset), len(valid_dataset)))
 
     
-    criteria = nn.CrossEntropyLoss(ignore_index=10003, size_average=False)
+    criteria = nn.CrossEntropyLoss(ignore_index=52700, size_average=False)
     if use_cuda:
         criteria.cuda()
     
@@ -68,24 +69,56 @@ def train(options, model):
         for i_batch, sample_batch in enumerate(tqdm(train_dataloader)):
             new_tc_ratio = 2100.0/(2100.0 + math.exp(batch_id/2100.0))
             model.dec.set_tc_ratio(new_tc_ratio)
-            
             preds, lmpreds = model(sample_batch)
-            u3 = sample_batch[4]
-            if use_cuda:
-                u3 = u3.cuda()
-                
-            preds = preds[:, :-1, :].contiguous().view(-1, preds.size(2))
-            u3 = u3[:, 1:].contiguous().view(-1)
+            maxlen = sample_batch[3]
+            utter_batch = sample_batch[0]
+            turnsnumbers = sample_batch[2]
+            final_utters = torch.ones(50,maxlen).long()
+            final_preds = torch.ones(50,maxlen,52701)
+            final_lmpreds = []
+            for i in range(0, options.bt_siz-1):
+                turnsnumber = turnsnumbers[i]
+                final_pred = []
+                final_pred = preds[turnsnumber-2][i]
+                #final_pred = np.array(final_pred)
+                #final_pred = final_pred.transpose((1,0)
+                final_preds[i]=final_pred
+                #final_lmpred = lmpreds[turnsnumber-2][i]
+                #final_lmpreds.append(final_lmpred)
+                final_utterance = utter_batch[turnsnumber-1][i]
+                final_utters[i] = final_utterance
+                #print(final_pred)
+                #print(final_utterance)
+                #if i!= 0:
+                #    final_preds = torch.cat((final_preds,final_pred),0)
+                #    final_utters = torch.cat((final_utters,final_utterance), 0)
+                #else:
+                #    final_preds = final_pred
+                #    final_utters = final_utterance    
+            #u3 = sample_batch[4]
+            #if use_cuda:
+            #    u3 = u3.cuda()
+            #if use_cuda:
+            #    final_utters = final_utters.cuda()
+            #print(len(final_preds))
+            #final_preds = np.array(final_preds)
+            #final_preds = final_preds.transpose((0,2,1))
+            final_preds = final_preds[:, :-1, :].contiguous().view(-1, final_preds.size(2))
+            final_utters = final_utters[:, 1:].contiguous().view(-1)
             
-            loss = criteria(preds, u3)
-            target_toks = u3.ne(10003).long().sum().data[0]
+            loss = criteria(final_preds, final_utters)
+            target_toks = final_utters.ne(52700).long().sum().data
             
             num_words += target_toks
-            tr_loss += loss.data[0]
+            tr_loss += loss.data
             loss = loss/target_toks
             
             if options.lm:
-                lmpreds = lmpreds[:, :-1, :].contiguous().view(-1, lmpreds.size(2))
+                for i in range(0, options.bt_siz-1):
+                    turnsnumber = turnsnumber[i]
+                    final_lmpred = lmpreds[turnsnumber-2][i]
+                    final_lmpreds.append(final_lmpred)
+                final_lmpreds = final_lmpreds[:, :-1, :].contiguous().view(-1, final_lmpreds.size(2))
                 lm_loss = criteria(lmpreds, u3)
                 tlm_loss += lm_loss.data[0]
                 lm_loss = lm_loss/target_toks
@@ -100,16 +133,24 @@ def train(options, model):
             batch_id += 1
 
         vl_loss = calc_valid_loss(valid_dataloader, criteria, model)
-        print("Training loss {} lm loss {} Valid loss {}".format(tr_loss/num_words, tlm_loss/num_words, vl_loss))
-        print("epoch {} took {} mins".format(i+1, (time.time() - strt)/60.0))
-        print("tc ratio", model.dec.get_tc_ratio())
-        if vl_loss < best_vl_loss or options.toy:
-            torch.save(model.state_dict(), options.name + '_mdl.pth')
-            torch.save(optimizer.state_dict(), options.name + '_opti_st.pth')
+        try:
+            print("Training loss {}".format(tr_loss/num_words))
+        except:
+            print("train loss error")
+        try:
+            print("Validation loss {}".format(vl_loss))
             best_vl_loss = vl_loss
-            patience = 0
-        else:
-            patience += 1
+        except:
+            print("vlloss error")
+        print("epoch {} took {} mins".format(i+1, (time.time() - strt)/60.0))
+        #print("tc ratio", model.dec.get_tc_ratio())
+        #if vl_loss < best_vl_loss or options.toy:
+        torch.save(model.state_dict(), options.name + '_mdl.pth')
+        torch.save(optimizer.state_dict(), options.name + '_opti_st.pth')
+        #best_vl_loss = vl_loss
+        #patience = 0
+        #else:
+        #    patience += 1
 
 def load_model_state(mdl, fl):
     saved_state = torch.load(fl)
@@ -185,7 +226,7 @@ def get_sent_ll(u3, u3_lens, model, criteria, ses_encoding):
     
 # sample a sentence from the test set by using beam search
 def inference_beam(dataloader, model, inv_dict, options):
-    criteria = nn.CrossEntropyLoss(ignore_index=10003, size_average=False)
+    criteria = nn.CrossEntropyLoss(ignore_index=52700, size_average=False)
     if use_cuda:
         criteria.cuda()
     
@@ -199,16 +240,16 @@ def inference_beam(dataloader, model, inv_dict, options):
     print("test preplexity is:{}".format(test_ppl))
     
     for i_batch, sample_batch in enumerate(dataloader):
-        u1, u1_lens, u2, u2_lens, u3, u3_lens = sample_batch[0], sample_batch[1], sample_batch[2], sample_batch[3], \
-                                                sample_batch[4], sample_batch[5]
+        #u1, u1_lens, u2, u2_lens, u3, u3_lens = sample_batch[0], sample_batch[1], sample_batch[2], sample_batch[3], \
+        #                                        sample_batch[4], sample_batch[5]
             
-        if use_cuda:
-            u1 = u1.cuda()
-            u2 = u2.cuda()
-            u3 = u3.cuda()
+        #if use_cuda:
+        #    u1 = u1.cuda()
+        #    u2 = u2.cuda()
+        #    u3 = u3.cuda()
         
-        o1, o2 = model.base_enc((u1, u1_lens)), model.base_enc((u2, u2_lens))
-        qu_seq = torch.cat((o1, o2), 1)
+        #o1, o2 = model.base_enc((u1, u1_lens)), model.base_enc((u2, u2_lens))
+        #qu_seq = torch.cat((o1, o2), 1)
         # if we need to decode the intermediate queries we may need the hidden states
         final_session_o = model.ses_enc(qu_seq)
         # forward(self, ses_encoding, x=None, x_lens=None, beam=5 ):
@@ -238,15 +279,59 @@ def calc_valid_loss(data_loader, criteria, model):
     valid_loss, num_words = 0, 0
     for i_batch, sample_batch in enumerate(tqdm(data_loader)):
         preds, lmpreds = model(sample_batch)
-        u3 = sample_batch[4]
-        if use_cuda:
-            u3 = u3.cuda()
-        preds = preds[:, :-1, :].contiguous().view(-1, preds.size(2))
-        u3 = u3[:, 1:].contiguous().view(-1)
+        maxlen = sample_batch[3]
+        utter_batch = sample_batch[0]
+        turnsnumbers = sample_batch[2]
+        final_utters = torch.ones(50,maxlen).long()
+        final_preds = torch.ones(50,maxlen,52701)
+        final_lmpreds = []
+        for i in range(0, options.bt_siz-1):
+            turnsnumber = turnsnumbers[i]
+            final_pred = []
+            final_pred = preds[turnsnumber-2][i]
+                #final_pred = np.array(final_pred)
+                #final_pred = final_pred.transpose((1,0)
+            final_preds[i]=final_pred
+                #final_lmpred = lmpreds[turnsnumber-2][i]
+                #final_lmpreds.append(final_lmpred)
+            final_utterance = utter_batch[turnsnumber-1][i]
+            final_utters[i] = final_utterance
+                #print(final_pred)
+                #print(final_utterance)
+                #if i!= 0:
+                #    final_preds = torch.cat((final_preds,final_pred),0)
+                #    final_utters = torch.cat((final_utters,final_utterance), 0)
+                #else:
+                #    final_preds = final_pred
+                #    final_utters = final_utterance    
+            #u3 = sample_batch[4]
+            #if use_cuda:
+            #    u3 = u3.cuda()
+            #if use_cuda:
+            #    final_utters = final_utters.cuda()
+            #print(len(final_preds))
+            #final_preds = np.array(final_preds)
+            #final_preds = final_preds.transpose((0,2,1))
+        final_preds = final_preds[:, :-1, :].contiguous().view(-1, final_preds.size(2))
+        final_utters = final_utters[:, 1:].contiguous().view(-1)
+
+        loss = criteria(final_preds, final_utters)
+        target_toks = final_utters.ne(52700).long().sum().data
+
+        num_words += target_toks
+        valid_loss += loss.data
+           # loss = loss/target_toks
+ #   for i_batch, sample_batch in enumerate(tqdm(data_loader)):
+ #       preds, lmpreds = model(sample_batch)
+ #       u3 = sample_batch[4]
+ #       if use_cuda:
+ #           u3 = u3.cuda()
+ #       preds = preds[:, :-1, :].contiguous().view(-1, preds.size(2))
+ #       u3 = u3[:, 1:].contiguous().view(-1)
         # do not include the lM loss, exp(loss) is perplexity
-        loss = criteria(preds, u3)
-        num_words += u3.ne(10003).long().sum().data[0]
-        valid_loss += loss.data[0]
+ #       loss = criteria(preds, u3)
+ #       num_words += u3.ne(10003).long().sum().data[0]
+ #       valid_loss += loss.data[0]
 
     model.train()
     model.dec.set_teacher_forcing(cur_tc)
@@ -300,11 +385,11 @@ def uniq_answer(fil):
     
 def main():
     print('torch version {}'.format(torch.__version__))
-    _dict_file = '/home/harshals/hed-dlg/Data/MovieTriples/Training.dict.pkl'
+    _dict_file = 'douban.dict.pkl'
     # we use a common dict for all test, train and validation
     
     with open(_dict_file, 'rb') as fp2:
-        dict_data = pickle.load(fp2)
+        dict_data = pickle.load(fp2,encoding='iso-8859-1')
     # dictionary data is like ('</s>', 2, 588827, 785135)
     # so i believe that the first is the ids are assigned by frequency
     # thinking to use a counter collection out here maybe
@@ -312,7 +397,6 @@ def main():
     for x in dict_data:
         tok, f, _, _ = x
         inv_dict[f] = tok
-
     parser = argparse.ArgumentParser(description='HRED parameter options')
     parser.add_argument('-n', dest='name', help='enter suffix for model files', required=True)
     parser.add_argument('-e', dest='epoch', type=int, default=20, help='number of epochs')
@@ -329,9 +413,9 @@ def main():
     parser.add_argument('-drp', dest='drp', type=float, default=0.3, help='dropout probability used all throughout')
     parser.add_argument('-nl', dest='num_lyr', type=int, default=1, help='number of enc/dec layers(same for both)')
     parser.add_argument('-lr', dest='lr', type=float, default=0.001, help='learning rate for optimizer')
-    parser.add_argument('-bs', dest='bt_siz', type=int, default=100, help='batch size')
+    parser.add_argument('-bs', dest='bt_siz', type=int, default=16, help='batch size')
     parser.add_argument('-bms', dest='beam', type=int, default=1, help='beam size for decoding')
-    parser.add_argument('-vsz', dest='vocab_size', type=int, default=10004, help='size of vocabulary')
+    parser.add_argument('-vsz', dest='vocab_size', type=int, default=52701, help='size of vocabulary')
     parser.add_argument('-esz', dest='emb_size', type=int, default=300, help='embedding size enc/dec same')
     parser.add_argument('-uthid', dest='ut_hid_size', type=int, default=600, help='encoder utterance hidden state')
     parser.add_argument('-seshid', dest='ses_hid_size', type=int, default=1200, help='encoder session hidden state')

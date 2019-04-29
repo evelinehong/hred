@@ -2,7 +2,7 @@ import torch.nn as nn, torch, copy, tqdm, math
 from torch.autograd import Variable
 import torch.nn.functional as F
 use_cuda = torch.cuda.is_available()
-
+import numpy as np
 
 def max_out(x):
     # make sure s2 is even and that the input is 2 dimension
@@ -29,16 +29,34 @@ class Seq2Seq(nn.Module):
         self.dec = Decoder(options)
         
     def forward(self, sample_batch):
-        u1, u1_lens, u2, u2_lens, u3, u3_lens = sample_batch[0], sample_batch[1], sample_batch[2], \
-        sample_batch[3], sample_batch[4], sample_batch[5]
-        if use_cuda:
-            u1 = u1.cuda()
-            u2 = u2.cuda()
-            u3 = u3.cuda()
-        o1, o2 = self.base_enc((u1, u1_lens)), self.base_enc((u2, u2_lens))
-        qu_seq = torch.cat((o1, o2), 1)
-        final_session_o = self.ses_enc(qu_seq)
-        preds, lmpreds = self.dec((final_session_o, u3, u3_lens))
+        qu_seq = torch.ones(1)
+        session_outputs = []
+        preds = []
+        lmpreds = []
+        turnsnumber = sample_batch[2]
+        max_clu = sample_batch[3]
+        for i in range(0, len(sample_batch[0])-1):
+            utter = sample_batch[0][i]
+            utter_lens = sample_batch[1][i]
+            if use_cuda:
+                utter = utter.cuda()
+            o = self.base_enc((utter,utter_lens))
+            if i!= 0:
+                qu_seq = torch.cat((qu_seq,o),1)
+            else:
+                qu_seq = o
+            turn = np.array(turnsnumber)
+            turn[turn > i + 1] = i + 1
+            session_o = self.ses_enc(qu_seq)
+            session_outputs.append(session_o)
+            next_utter = sample_batch[0][i+1]
+            next_utterlens = sample_batch[1][i+1]
+            pred, lmpred = self.dec((session_o, next_utter, next_utterlens))
+            preds.append(pred)
+            lmpreds.append(lmpred)
+  
+        #final_session_o = self.ses_enc(qu_seq, turnsnumber)
+        #preds, lmpreds = self.dec((final_session_o, u3, u3_lens))
         
         return preds, lmpreds
     
@@ -52,7 +70,7 @@ class BaseEncoder(nn.Module):
         self.drop = nn.Dropout(options.drp)
         self.direction = 2 if options.bidi else 1
         # by default they requires grad is true
-        self.embed = nn.Embedding(vocab_size, emb_size, padding_idx=10003, sparse=False)
+        self.embed = nn.Embedding(vocab_size, emb_size, padding_idx=52700, sparse=False)
         self.rnn = nn.GRU(input_size=emb_size, hidden_size=hid_size,
                           num_layers=self.num_lyr, bidirectional=options.bidi, batch_first=True, dropout=options.drp)
 
@@ -64,7 +82,7 @@ class BaseEncoder(nn.Module):
             h_0 = h_0.cuda()
         x_emb = self.embed(x)
         x_emb = self.drop(x_emb)
-        x_emb = torch.nn.utils.rnn.pack_padded_sequence(x_emb, x_lens, batch_first=True)
+        # x_emb = torch.nn.utils.rnn.pack_padded_sequence(x_emb, x_lens, batch_first=True)
         x_o, x_hid = self.rnn(x_emb, h_0)
         # assuming dimension 0, 1 is for layer 1 and 2, 3 for layer 2
         if self.direction == 2:
@@ -96,6 +114,7 @@ class SessionEncoder(nn.Module):
         if use_cuda:
             h_0 = h_0.cuda()
         # output, h_n for output batch is already dim 0
+        #x = torch.nn.utils.rnn.pack_padded_sequence(x, x_lens, batch_first=True)
         h_o, h_n = self.rnn(x, h_0)
         h_n = h_n.view(x.size(0), -1, self.hid_size)
         return h_n
@@ -115,7 +134,7 @@ class Decoder(nn.Module):
         self.tanh = nn.Tanh()
         self.shared_weight = options.shrd_dec_emb
         
-        self.embed_in = nn.Embedding(options.vocab_size, self.emb_size, padding_idx=10003, sparse=False)
+        self.embed_in = nn.Embedding(options.vocab_size, self.emb_size, padding_idx=52700, sparse=False)
         if not self.shared_weight:
             self.embed_out = nn.Linear(self.emb_size, options.vocab_size, bias=False)
         
@@ -137,13 +156,13 @@ class Decoder(nn.Module):
         # below will be used later as a crude approximation of an LM
         emb_inf_vec = self.emb_inf(target_emb)
         
-        target_emb = torch.nn.utils.rnn.pack_padded_sequence(target_emb, target_lens, batch_first=True)
+        #target_emb = torch.nn.utils.rnn.pack_padded_sequence(target_emb, target_lens, batch_first=True)
         
         init_hidn = self.tanh(self.ses_to_dec(ses_encoding))
         init_hidn = init_hidn.view(self.num_lyr, target.size(0), self.hid_size)
         
         hid_o, hid_n = self.rnn(target_emb, init_hidn)
-        hid_o, _ = torch.nn.utils.rnn.pad_packed_sequence(hid_o, batch_first=True)        
+        #hid_o, _ = torch.nn.utils.rnn.pad_packed_sequence(hid_o, batch_first=True)        
         # linear layers not compatible with PackedSequence need to unpack, will be 0s at padded timesteps!
         
         dec_hid_vec = self.dec_inf(hid_o)
@@ -161,7 +180,7 @@ class Decoder(nn.Module):
                 lm_hid0 = lm_hid0.cuda()
 
             lm_o, lm_hid = self.lm(target_emb, lm_hid0)
-            lm_o, _ = torch.nn.utils.rnn.pad_packed_sequence(lm_o, batch_first=True)
+            #lm_o, _ = torch.nn.utils.rnn.pad_packed_sequence(lm_o, batch_first=True)
             lm_o = self.lin3(lm_o)
             lm_o = F.linear(lm_o, self.embed_in.weight) if self.shared_weight else self.embed_out(lm_o)
             return hid_o_mx, lm_o
