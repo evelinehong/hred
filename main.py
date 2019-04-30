@@ -47,9 +47,9 @@ def train(options, model):
     else:
         train_dataset, valid_dataset = MovieTriples('train'), MovieTriples('valid')
         
-    train_dataloader = DataLoader(train_dataset, batch_size=options.bt_siz, shuffle=True, num_workers=2,
+    train_dataloader = DataLoader(train_dataset, batch_size=options.bt_siz, shuffle=False, num_workers=2,
                                   collate_fn=custom_collate_fn)
-    valid_dataloader = DataLoader(valid_dataset, batch_size=options.bt_siz, shuffle=True, num_workers=2,
+    valid_dataloader = DataLoader(valid_dataset, batch_size=options.bt_siz, shuffle=False, num_workers=2,
                                   collate_fn=custom_collate_fn)
 
     print("Training set {} Validation set {}".format(len(train_dataset), len(valid_dataset)))
@@ -60,7 +60,7 @@ def train(options, model):
         criteria.cuda()
     
     best_vl_loss, patience, batch_id = 10000, 0, 0
-    for i in range(options.epoch):
+    for j in range(options.epoch):
         if patience == options.patience:
             break
         tr_loss, tlm_loss, num_words = 0, 0, 0
@@ -77,6 +77,13 @@ def train(options, model):
             final_utters = torch.ones(options.bt_siz,maxlen).long()
             final_preds = torch.ones(options.bt_siz,maxlen,52701)
             final_lmpreds = []
+            min_turn = sample_batch[4]
+            #for i in range(0, options.bt_siz):
+            #    turnsnumber = turnsnumbers[i]
+            #    if min_turn >= 3 and turnsnumber == min_turn:
+                    
+            #        print(preds[turnsnumber-2][i])
+
             for i in range(0, options.bt_siz):
                 turnsnumber = turnsnumbers[i]
                 final_pred = []
@@ -137,11 +144,11 @@ def train(options, model):
         print("Training loss {}".format(tr_loss/num_words))
         print("Validation loss {}".format(vl_loss))
         best_vl_loss = vl_loss
-        print("epoch {} took {} mins".format(i+1, (time.time() - strt)/60.0))
+        print("epoch {} took {} mins".format(j+1, (time.time() - strt)/60.0))
         #print("tc ratio", model.dec.get_tc_ratio())
         #if vl_loss < best_vl_loss or options.toy:
-        torch.save(model.state_dict(), options.name + '_mdl.pth')
-        torch.save(optimizer.state_dict(), options.name + '_opti_st.pth')
+        torch.save(model.state_dict(), options.name + str(j)+'_mdl.pth')
+        torch.save(optimizer.state_dict(), options.name + str(j) + '_opti_st.pth')
         #best_vl_loss = vl_loss
         #patience = 0
         #else:
@@ -188,7 +195,7 @@ def generate(model, ses_encoding, options):
                 else:
                     uval = 0.0
                     
-                if ctok == 2:
+                if ctok == 1:
                     list_to_append = final_candids
                 else:
                     list_to_append = n_candidates
@@ -238,13 +245,17 @@ def inference_beam(dataloader, model, inv_dict, options):
     for i_batch, sample_batch in enumerate(dataloader):
         #u1, u1_lens, u2, u2_lens, u3, u3_lens = sample_batch[0], sample_batch[1], sample_batch[2], sample_batch[3], \
         #                                        sample_batch[4], sample_batch[5]
+        if i_batch == len(dataloader) - 2:
+             break
+        print(i_batch)
         qu_seq = torch.ones(1)
         session_outputs = []
         utter_batch = sample_batch[0]
         maxlen = sample_batch[3]
         turnsnumbers = sample_batch[2]
-        #final_utters = torch.ones(
-        for i in range(0, len(sample_batch[0]) - 1):
+        #final_utters = torch.ones
+        
+        for i in range(0, len(sample_batch[0])):
             utter = sample_batch[0][i]
             utter_lens = sample_batch[1][i]
             if use_cuda:
@@ -270,21 +281,22 @@ def inference_beam(dataloader, model, inv_dict, options):
         #final_session_o = model.ses_enc(qu_seq)
         #forward(self, ses_encoding, x=None, x_lens=None, beam=5 ):
         for k in range(options.bt_siz):
-            turnsnumber = turnsnumbers[i]
+            turnsnumber = turnsnumbers[k]
             final_utterance = utter_batch[turnsnumber-1][k]
             final_session_o = session_outputs[turnsnumber-2][k]
             sent = generate(model, final_session_o.unsqueeze(0), options)
             pt = tensor_to_sent(sent, inv_dict)
             # greedy true for below because only beam generates a tuple of sequence and probability
             gt = tensor_to_sent(final_utterance.unsqueeze(0).data.cpu().numpy(), inv_dict, True)
-            fout.write(str(gt[0]) + "    |    " + str(pt[0][0]) + "\n")
+            
+            fout.write(str(gt[0]) + "    |    " + str(pt) +"\n")
             fout.flush()
 
-            if not options.pretty:
-                print(pt)
-                print("Ground truth {} {} \n".format(gt, get_sent_ll(u3[k, :].unsqueeze(0), u3_lens[k:k+1], model, criteria, final_session_o)))
-            else:
-                print(gt[0], "|", pt[0][0])
+            #if not options.pretty:
+            #    print(pt)
+                #print("Ground truth {} {} \n".format(gt, get_sent_ll(final_utterance.unsqueeze(0), u3_lens[k:k+1], model, criteria, final_session_o)))
+            #else:
+            #    print(gt[0], "|", pt[0][0])
 
     model.dec.set_teacher_forcing(cur_tc)
     fout.close()
@@ -305,6 +317,7 @@ def calc_valid_loss(data_loader, criteria, model,options):
         final_utters = torch.ones(options.bt_siz,maxlen).long()
         final_preds = torch.ones(options.bt_siz,maxlen,52701)
         final_lmpreds = []
+        min_turn = sample_batch[4]
         for i in range(0, options.bt_siz):
             turnsnumber = turnsnumbers[i]
             final_pred = []
@@ -433,7 +446,7 @@ def main():
     parser.add_argument('-drp', dest='drp', type=float, default=0.3, help='dropout probability used all throughout')
     parser.add_argument('-nl', dest='num_lyr', type=int, default=1, help='number of enc/dec layers(same for both)')
     parser.add_argument('-lr', dest='lr', type=float, default=0.001, help='learning rate for optimizer')
-    parser.add_argument('-bs', dest='bt_siz', type=int, default=1, help='batch size')
+    parser.add_argument('-bs', dest='bt_siz', type=int, default=25, help='batch size')
     parser.add_argument('-bms', dest='beam', type=int, default=5, help='beam size for decoding')
     parser.add_argument('-vsz', dest='vocab_size', type=int, default=52701, help='size of vocabulary')
     parser.add_argument('-esz', dest='emb_size', type=int, default=300, help='embedding size enc/dec same')
@@ -457,7 +470,7 @@ def main():
             test_dataset = MovieTriples('test')
         
         
-        test_dataloader = DataLoader(test_dataset, options.bt_siz, shuffle=True, num_workers=2, collate_fn=custom_collate_fn)
+        test_dataloader = DataLoader(test_dataset, options.bt_siz, shuffle=False, num_workers=2, collate_fn=custom_collate_fn)
         inference_beam(test_dataloader, model, inv_dict, options)
         #uniq_answer(options.name)
 

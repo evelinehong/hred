@@ -101,11 +101,14 @@ def custom_collate_fn(batch):
 
     #return u1_batch[sort1, :], u1_lens[sort1], u2_batch[sort2, :], u2_lens[sort2], u3_batch[sort3, :], u3_lens[sort3]
     maxturnsnumber = 0
+    minturn = 100
     turnsnumbers = []
     for i, (d, cl_u) in enumerate(batch):
         turnsnumber = len(cl_u)
         if turnsnumber >= maxturnsnumber:
             maxturnsnumber = turnsnumber
+        if turnsnumber <= minturn:
+            minturn = turnsnumber
     u_batch = []
     u_lens = []
     l_u = []
@@ -150,8 +153,8 @@ def custom_collate_fn(batch):
     #print(u_batch)
     #u_batch = np.array(u_batch)
     #sort4utternumber = np.argsort(turnsnumber*-1)
-    #u_batch = u_batch[sort4utternumber,:]
-    return u_batch, u_lens, turnsnumbers, max_clu
+    #u_batch = u_batch[sort4utternumber,:
+    return u_batch, u_lens, turnsnumbers, max_clu, minturn
 
 class DialogTurn:
     def __init__(self, item):
@@ -181,11 +184,11 @@ class DialogTurn:
 class MovieTriples(Dataset):
     def __init__(self, data_type, length=None):
         if data_type == 'train':
-            _file = 'train_sub.dialogues.pkl'
+            _file = 'train_sorted.dialogues.pkl'
         elif data_type == 'valid':
-            _file = 'valid_sub.dialogues.pkl'
+            _file = 'valid_sorted.dialogues.pkl'
         elif data_type == 'test':
-            _file = 'test_sub.dialogues.pkl'
+            _file = 'test_sorted.dialogues.pkl'
         self.utterance_data = []
 
         with open(_file, 'rb') as fp:
@@ -219,9 +222,11 @@ def tensor_to_sent(x, inv_dict, greedy=False):
             scr = 0
             seq = li
         sent = []
+        seq = seq[1:]
         for i in seq:
+            i = i.item()
             sent.append(inv_dict[i])
-            if i == 2:
+            if i == 1:
                 break
         sents.append((" ".join(sent), scr))
     return sents

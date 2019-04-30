@@ -27,14 +27,15 @@ class Seq2Seq(nn.Module):
         self.base_enc = BaseEncoder(options.vocab_size, options.emb_size, options.ut_hid_size, options)
         self.ses_enc = SessionEncoder(options.ses_hid_size, options.ut_hid_size, options)
         self.dec = Decoder(options)
+        self.bt_siz = options.bt_siz
         
     def forward(self, sample_batch):
         qu_seq = torch.ones(1)
         session_outputs = []
         preds = []
         lmpreds = []
-        turnsnumber = sample_batch[2]
         max_clu = sample_batch[3]
+        min_turn = sample_batch[4]
         for i in range(0, len(sample_batch[0])-1):
             utter = sample_batch[0][i]
             utter_lens = sample_batch[1][i]
@@ -45,14 +46,18 @@ class Seq2Seq(nn.Module):
                 qu_seq = torch.cat((qu_seq,o),1)
             else:
                 qu_seq = o
-            turn = np.array(turnsnumber)
+            #turn = np.array(turnsnumber)
             #currently we do not need so many turns for input to the decoder
-            turn[turn > i + 1] = i + 1
-            session_o = self.ses_enc(qu_seq)
-            session_outputs.append(session_o)
-            next_utter = sample_batch[0][i+1]
-            next_utterlens = sample_batch[1][i+1]
-            pred, lmpred = self.dec((session_o, next_utter, next_utterlens))
+            #turn[turn > i + 1] = i + 1
+            if i < min_turn - 2:
+                pred = [0 for i in range(self.bt_siz)]
+                lmpred = [0 for i in range(self.bt_siz)]
+            else:
+                session_o = self.ses_enc(qu_seq)
+                #session_outputs.append(session_o)
+                next_utter = sample_batch[0][i+1]
+                next_utterlens = sample_batch[1][i+1]
+                pred, lmpred = self.dec((session_o, next_utter, next_utterlens))
             preds.append(pred)
             lmpreds.append(lmpred)
   
