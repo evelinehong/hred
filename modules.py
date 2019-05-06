@@ -46,9 +46,6 @@ class Seq2Seq(nn.Module):
                 qu_seq = torch.cat((qu_seq,o),1)
             else:
                 qu_seq = o
-            #turn = np.array(turnsnumber)
-            #currently we do not need so many turns for input to the decoder
-            #turn[turn > i + 1] = i + 1
             if i < min_turn - 2:
                 pred = [0 for i in range(self.bt_siz)]
                 lmpred = [0 for i in range(self.bt_siz)]
@@ -60,9 +57,7 @@ class Seq2Seq(nn.Module):
                 pred, lmpred = self.dec((session_o, next_utter, next_utterlens))
             preds.append(pred)
             lmpreds.append(lmpred)
-  
-        #final_session_o = self.ses_enc(qu_seq, turnsnumber)
-        #preds, lmpreds = self.dec((final_session_o, u3, u3_lens))
+
         
         return preds, lmpreds
     
